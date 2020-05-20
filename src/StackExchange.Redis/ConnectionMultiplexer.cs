@@ -1088,6 +1088,25 @@ namespace StackExchange.Redis
                 return new ServerSnapshot(arr, _count + 1);
             }
 
+            internal ServerSnapshot Remove(ServerEndPoint value)
+            {
+                if (value == null) return this;
+                var arr = _arr;
+                var arrCopy = new ServerEndPoint[arr.Length];
+                int inserted = 0;
+                for (int i = 0; i < _count; ++i)
+                {
+                    if (arr[i] != value)
+                    {
+                        arrCopy[inserted++] = arr[i];
+                    }
+                }
+
+                if (inserted == _count) return this;
+                
+                return new ServerSnapshot(arrCopy, inserted);
+            }
+
             internal EndPoint[] GetEndPoints()
             {
                 if (_count == 0) return Array.Empty<EndPoint>();
@@ -1100,12 +1119,14 @@ namespace StackExchange.Redis
                 return arr;
             }
         }
-        internal ServerEndPoint GetServerEndPoint(EndPoint endpoint, LogProxy log = null, bool activate = true)
+
+        internal ServerEndPoint GetServerEndPoint(EndPoint endpoint, LogProxy log = null, bool activate = true, bool create = true)
         {
             if (endpoint == null) return null;
             var server = (ServerEndPoint)servers[endpoint];
             if (server == null)
             {
+                if (!create) return null;
                 bool isNew = false;
                 lock (servers)
                 {
@@ -1124,6 +1145,27 @@ namespace StackExchange.Redis
                 if (isNew && activate) server.Activate(ConnectionType.Interactive, log);
             }
             return server;
+        }
+
+        internal void RemoveServerEndPoint(ServerEndPoint server)
+        {
+            if (server == null) return;
+            var endpoint = server.EndPoint;
+            if (endpoint == null) return;
+            var test = (ServerEndPoint)servers[endpoint];
+            if (test != server) return;
+            lock (servers)
+            {
+                test = (ServerEndPoint)servers[endpoint];
+                if (test != server)
+                {
+                    if (_isDisposed) throw new ObjectDisposedException(ToString());
+                    return;
+                }
+                servers.Remove(endpoint);
+                _serverSnapshot = _serverSnapshot.Remove(server);
+            }
+            server.Dispose();
         }
 
         internal readonly CommandMap CommandMap;
@@ -1489,6 +1531,8 @@ namespace StackExchange.Redis
                 }
             }
         }
+
+        private bool loadbalancedCluster = false;
         internal async Task<bool> ReconfigureAsync(bool first, bool reconfigureAll, LogProxy log, EndPoint blame, string cause, bool publishReconfigure = false, CommandFlags publishReconfigureFlags = CommandFlags.None)
         {
             if (_isDisposed) throw new ObjectDisposedException(ToString());
@@ -1537,6 +1581,22 @@ namespace StackExchange.Redis
                     }
                     int standaloneCount = 0, clusterCount = 0, sentinelCount = 0;
                     var endpoints = RawConfig.EndPoints;
+                    // If we suspect that connections to configured endpoints will be discarded
+                    // then we can check for configuration changes on the more 'permanent'
+                    // connections assuming that any are connected. Falling back to the configured
+                    // endpoints only in situations where all of the 'permanent' connections
+                    // aren't up which could mean that those endpoints are not going to be used
+                    // going forward (perhaps the A record changed or some ports were shuffled).
+                    // If we reconfigure after the 'permanent' endpoints are rediscovered or
+                    // restored we can again disconnect from the configured endpoints.
+                    if (loadbalancedCluster)
+                    {
+                        var snapshot = _serverSnapshot.GetEndPoints();
+                        if (snapshot.Any(s => GetServerEndPoint(s, log, false).IsConnected))
+                        {
+                            endpoints = new EndPointCollection(snapshot);
+                        }
+                    }
                     log?.WriteLine($"{endpoints.Count} unique nodes specified");
 
                     if (endpoints.Count == 0)
@@ -1691,6 +1751,29 @@ namespace StackExchange.Redis
                         if (encounteredConnectedClusterServer)
                         {
                             endpoints = updatedClusterEndpointCollection;
+                            if (RawConfig.PruneClusterConnections == true && endpoints != null)
+                            {
+                                foreach (var configEndpoint in RawConfig.EndPoints)
+                                {
+                                    // I suspect that the normal case for this is that there's only one endpoint
+                                    // configured in the options, with higher numbers of configured endpoints and
+                                    // cluster endpoints it would be worth using a Set to do the check
+                                    if (!endpoints.Contains(configEndpoint))
+                                    {
+                                        // If we've connected through the cluster through an endpoint that isn't "in" the
+                                        // cluster nodes endpoints then we aren't going to assign the endpoint any slots
+                                        // so the connection can be closed 
+                                        loadbalancedCluster = true;
+                                        var serverEndPoint = GetServerEndPoint(configEndpoint, create: false);
+                                        if (serverEndPoint != null)
+                                        {
+                                            log?.WriteLine($"Removing endpoint {Format.ToString(serverEndPoint.EndPoint)}");
+                                            RemoveServerEndPoint(serverEndPoint);
+                                        }
+                                        masters.RemoveAll(ep => ep.EndPoint.Equals(configEndpoint));
+                                    }
+                                }
+                            }
                         }
                         else
                         {
