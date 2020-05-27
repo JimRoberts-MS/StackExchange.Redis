@@ -89,7 +89,8 @@ namespace StackExchange.Redis
                 SyncTimeout = "syncTimeout",
                 TieBreaker = "tiebreaker",
                 Version = "version",
-                WriteBuffer = "writeBuffer";
+                WriteBuffer = "writeBuffer",
+                PruneClusterConnections = "pruneClusterConnections";
 
             private static readonly Dictionary<string, string> normalizedOptions = new[]
             {
@@ -118,6 +119,7 @@ namespace StackExchange.Redis
                 TieBreaker,
                 Version,
                 WriteBuffer,
+                PruneClusterConnections,
             }.ToDictionary(x => x, StringComparer.OrdinalIgnoreCase);
 
             public static string TryNormalize(string value)
@@ -333,6 +335,13 @@ namespace StackExchange.Redis
         public Proxy Proxy { get { return proxy.GetValueOrDefault(); } set { proxy = value; } }
 
         /// <summary>
+        /// Should extra connections be removed for a cluster behind a load balancer.
+        /// If this is configured then endpoints specified in the configuration may not have backing connections
+        /// (ConnectionMultiplexer.GetServer may throw an ArgumentException if a pruned enpoint is passed)
+        /// </summary>
+        public bool? PruneClusterConnections { get; set; }
+
+        /// <summary>
         /// The retry policy to be used for connection reconnects
         /// </summary>
         public IReconnectRetryPolicy ReconnectRetryPolicy { get { return reconnectRetryPolicy ?? (reconnectRetryPolicy = new LinearRetry(ConnectTimeout)); } set { reconnectRetryPolicy = value; } }
@@ -471,6 +480,7 @@ namespace StackExchange.Redis
                 ReconnectRetryPolicy = reconnectRetryPolicy,
                 SslProtocols = SslProtocols,
                 checkCertificateRevocation = checkCertificateRevocation,
+                PruneClusterConnections = PruneClusterConnections,
             };
             foreach (var item in EndPoints)
                 options.EndPoints.Add(item);
@@ -530,6 +540,7 @@ namespace StackExchange.Redis
             Append(sb, OptionKeys.ConfigCheckSeconds, configCheckSeconds);
             Append(sb, OptionKeys.ResponseTimeout, responseTimeout);
             Append(sb, OptionKeys.DefaultDatabase, DefaultDatabase);
+            Append(sb, OptionKeys.PruneClusterConnections, PruneClusterConnections);
             commandMap?.AppendDeltas(sb);
             return sb.ToString();
         }
@@ -734,6 +745,9 @@ namespace StackExchange.Redis
                             break;
                         case OptionKeys.SslProtocols:
                             SslProtocols = OptionKeys.ParseSslProtocols(key, value);
+                            break;
+                        case OptionKeys.PruneClusterConnections:
+                            PruneClusterConnections = OptionKeys.ParseBoolean(key, value);
                             break;
                         default:
                             if (!string.IsNullOrEmpty(key) && key[0] == '$')

@@ -89,6 +89,7 @@ The `ConfigurationOptions` object has a wide range of properties, all of which a
 | version={string}       | `DefaultVersion`       | (`3.0` in Azure, else `2.0`) | Redis version level (useful when the server does not make this available)                                 |
 | writeBuffer={int}      | `WriteBuffer`          | `4096`                       | Size of the output buffer                                                                                 |
 |                        | `CheckCertificateRevocation` | `true`                 | A Boolean value that specifies whether the certificate revocation list is checked during authentication.  |
+| pruneClusterConnections={bool} | `PruneClusterConnections` | `false`           | If true connections from configured endpoints to cluster caches that don't appear in a `cluster nodes` response will be closed. Note: if the configured endpoint is passed to GetServer() it will throw an exception. |
 
 Additional code-only options:
 - ReconnectRetryPolicy (`IReconnectRetryPolicy`) - Default: `ReconnectRetryPolicy = LinearRetry(ConnectTimeout);`
